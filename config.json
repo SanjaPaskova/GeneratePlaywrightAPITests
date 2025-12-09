@@ -1,0 +1,7 @@
+{
+    "swagger_url": "https://petstore.swagger.io/v2/swagger.json",
+    "api_key": "special-key",
+    "llm_provider": "none",
+    "model": "gpt-4o",
+    "fallback_to_schema": true
+}
