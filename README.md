@@ -44,16 +44,16 @@ npx playwright install
 
 ### 3. Generate Playwright tests
 
-**Option A: Using MCP Agent (Recommended)**
+**Option A: Advanced Generator (Recommended)**
 ```bash
 # Ensure venv is activated
-python agents/generate_tests_with_mcp_agent.py
+python scripts/generate_tests_main_script.py
 ```
 
-**Option B: Basic Generation**
+**Option B: Basic Generator**
 ```bash
 # Ensure venv is activated
-python agents/generate_playwright_tests.py
+python scripts/generate_playwright_tests.py
 ```
 
 Both options generate `tests/petstore.spec.ts` (generated output, not tracked by git).
@@ -105,22 +105,22 @@ Edit `config.json` to set your Swagger/OpenAPI URL and LLM provider:
 - **`npm run test`**: Run all Playwright tests
 - **`npm run test:debug`**: Run tests in debug mode
 
-### Python agents
-1. **`agents/generate_tests_with_mcp_agent.py`** – MCP-style generator with optional AI
+### Python scripts
+1. **`scripts/generate_tests_main_script.py`** – Advanced generator with optional AI
    ```bash
-   python agents/generate_tests_with_mcp_agent.py
+   python scripts/generate_tests_main_script.py
    ```
-2. **`agents/generate_playwright_tests.py`** – Basic schema-only generator
+2. **`scripts/generate_playwright_tests.py`** – Basic schema-only generator
    ```bash
-   python agents/generate_playwright_tests.py
+   python scripts/generate_playwright_tests.py
    ```
-3. **`agents/review_test_coverage.py`** – Coverage analysis and gap report
+3. **`scripts/review_test_coverage.py`** – Coverage analysis and gap report
    ```bash
-   python agents/review_test_coverage.py
+   python scripts/review_test_coverage.py
    ```
-4. **`agents/debug_test_results.py`** – Failure analysis and debug report
+4. **`scripts/debug_test_results.py`** – Failure analysis and debug report
    ```bash
-   python agents/debug_test_results.py tests/petstore.spec.ts chromium
+   python scripts/debug_test_results.py tests/petstore.spec.ts chromium
    ```
 
 ## Troubleshooting

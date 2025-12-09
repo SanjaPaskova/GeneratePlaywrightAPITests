@@ -1,5 +1,5 @@
 # debug_test_results.py
-# Agent 3: Debug the results of the automated regression suite using Playwright MCP agent
+# Script: Debug the results of the automated regression suite using Playwright
 
 import subprocess
 import json
@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-# Playwright MCP agent - uses Playwright test runner directly
+# Uses Playwright test runner directly
 
 # Load configuration
 # Get project root (one level up from agents/)
@@ -36,14 +36,14 @@ class TestDebugger:
         }
 
     def run_tests(self):
-        """Run Playwright tests using MCP agent tools"""
+        """Run Playwright tests and collect results"""
         print("=" * 80)
-        print("🐛 Agent 3: Test Results Debugger (Playwright MCP Agent)")
+        print("🐛 Test Results Debugger")
         print("=" * 80)
         
         print(f"\n📋 Running tests from: {TEST_FILE}")
         print(f"🎯 Project: {PROJECT}")
-        print("🔧 Using Playwright MCP agent tools...\n")
+        print("🔧 Using Playwright test runner...\n")
 
         try:
             # Use Playwright test runner directly (MCP patterns)
@@ -75,8 +75,8 @@ class TestDebugger:
             return self.analyze_error_output(str(e), e)
 
     def analyze_results(self, json_results):
-        """Analyze JSON test results using Playwright MCP agent patterns"""
-        print("📊 Analyzing test results using Playwright MCP agent...\n")
+        """Analyze JSON test results and produce a friendly report"""
+        print("📊 Analyzing test results...\n")
 
         if "suites" in json_results:
             for suite in json_results["suites"]:
@@ -351,13 +351,13 @@ class TestDebugger:
             "failures": self.results["failures"],
             "errors": self.results["errors"],
             "timestamp": datetime.now().isoformat(),
-            "mcpAgent": "Playwright MCP Test Debugger"
+            "toolName": "Playwright Test Debugger"
         }
 
         # Generate text report
         text_report = f"""
 {'='*80}
-🐛 TEST DEBUG REPORT (Playwright MCP Agent)
+🐛 TEST DEBUG REPORT
 {'='*80}
 
 Summary:
@@ -385,7 +385,7 @@ FAILED TESTS ANALYSIS
 
    Error: {failure['errorMessage'] or 'No error message'}
 
-   🔍 Debugging Suggestions (MCP Analysis):
+    🔍 Debugging Suggestions:
 """
 
                 for suggestion in failure["suggestions"]:

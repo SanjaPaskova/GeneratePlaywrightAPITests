@@ -1,5 +1,5 @@
-# generate_tests_with_mcp_agent.py
-# Uses Playwright MCP agent tools with LLM to generate API tests from Swagger/OpenAPI specs
+# Main test generation script
+# Generates Playwright API tests from Swagger/OpenAPI specs (optional LLM)
 
 import requests
 import json
@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Load configuration
-# Get project root (one level up from agents/)
+# Get project root (one level up from scripts/)
 project_root = Path(__file__).parent.parent
 config_path = project_root / "config.json"
 with open(config_path, "r") as f:
@@ -209,7 +209,7 @@ def use_playwright_mcp_tools(spec, endpoints):
     """Use Playwright MCP tools programmatically to generate tests"""
     # This would require connecting to Playwright MCP server
     # For now, we'll use the LLM agent approach with Playwright test patterns
-    print("🔧 Using Playwright MCP agent patterns for test generation...")
+    print("🔧 Generating tests using local patterns...")
     
     base_url = spec.get("host", "petstore.swagger.io")
     base_path = spec.get("basePath", "")
@@ -237,7 +237,7 @@ AI-Generated Test Plan:
 */
 
 // Use serial mode to run tests sequentially and share state
-test.describe.serial('API Tests - MCP Agent Generated', () => {{
+test.describe.serial('API Tests - Generated', () => {{
 """
     
     # Group endpoints by resource and method
@@ -423,7 +423,7 @@ def generate_basic_test(ep, use_stored_id=False):
 
 # Main execution
 print("=" * 80)
-print("🚀 Playwright MCP Agent Test Generator")
+print("🚀 Playwright Test Generator")
 print("=" * 80)
 
 if LLM_PROVIDER == "none":
