@@ -6,17 +6,22 @@ import requests
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-# Load configuration
-# Get project root (one level up from agents/)
+# Get project root and add to path BEFORE importing scripts module
 project_root = Path(__file__).parent.parent
-config_path = project_root / "config.json"
-with open(config_path, "r") as f:
-    config = json.load(f)
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-SWAGGER_URL = config.get("swagger_url", "https://petstore.swagger.io/v2/swagger.json")
+# Now import config_loader (after adding project root to path)
+from scripts.config_loader import get_swagger_url, load_config
+
+# Paths and configuration
+config = load_config()
+
+SWAGGER_URL = get_swagger_url()
 TEST_FILE = config.get("test_file", str(project_root / "tests" / "petstore.spec.ts"))
 
 

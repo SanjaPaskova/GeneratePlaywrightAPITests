@@ -9,14 +9,20 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Load configuration
 # Get project root (one level up from scripts/)
 project_root = Path(__file__).parent.parent
-config_path = project_root / "config.json"
-with open(config_path, "r") as f:
-    config = json.load(f)
 
-SWAGGER_URL = config.get("swagger_url", "https://petstore.swagger.io/v2/swagger.json")
+# Add project root to Python path BEFORE importing scripts module
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# Now import config_loader (this will work from any directory)
+from scripts.config_loader import load_config, get_swagger_url
+
+# Load configuration
+config = load_config()
+
+SWAGGER_URL = get_swagger_url()
 API_KEY = config.get("api_key", "special-key")
 LLM_PROVIDER = config.get("llm_provider", "openai")
 OPENAI_API_KEY = config.get("openai_api_key")
