@@ -22,7 +22,24 @@ from scripts.config_loader import get_swagger_url, load_config
 config = load_config()
 
 SWAGGER_URL = get_swagger_url()
-TEST_FILE = config.get("test_file", str(project_root / "tests" / "petstore.spec.ts"))
+# Generate test file name from API spec if not specified
+if "test_file" not in config:
+    # Try to derive from API spec
+    try:
+        swagger_url = get_swagger_url()
+        import requests
+        spec_response = requests.get(swagger_url)
+        spec = spec_response.json()
+        api_info = spec.get("info", {})
+        api_title = api_info.get("title", "API")
+        api_name = "".join(c.lower() if c.isalnum() else "_" for c in api_title).strip("_")
+        if not api_name:
+            api_name = "api_tests"
+        TEST_FILE = str(project_root / "tests" / f"{api_name}.spec.ts")
+    except:
+        TEST_FILE = str(project_root / "tests" / "api_tests.spec.ts")
+else:
+    TEST_FILE = config.get("test_file", str(project_root / "tests" / "api_tests.spec.ts"))
 
 
 def load_swagger_spec(url=SWAGGER_URL):

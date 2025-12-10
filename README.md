@@ -56,7 +56,7 @@ python scripts/generate_tests_main_script.py
 python scripts/generate_playwright_tests.py
 ```
 
-Both options generate `tests/petstore.spec.ts` (generated output, not tracked by git).
+Both options generate `tests/{api_name}.spec.ts` (generated output, not tracked by git), where `{api_name}` is derived from the API specification title.
 
 ### 4. Run the tests
 ```bash
@@ -120,7 +120,7 @@ Edit `config.json` to set your Swagger/OpenAPI URL and LLM provider:
    ```
 4. **`scripts/debug_test_results.py`** – Failure analysis and debug report
    ```bash
-   python scripts/debug_test_results.py tests/petstore.spec.ts chromium
+   python scripts/debug_test_results.py tests/{api_name}.spec.ts chromium
    ```
 
 ## Troubleshooting

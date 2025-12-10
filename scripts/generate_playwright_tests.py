@@ -3,6 +3,7 @@ import requests
 import json
 import os
 from pathlib import Path
+import re
 
 # Load configuration
 # Get project root (one level up from agents/)
@@ -37,26 +38,83 @@ def get_endpoints(spec):
     return endpoints
 
 
-def generate_playwright_tests(spec, endpoints):
-    base_url = spec.get("host", "petstore.swagger.io")
+def get_base_url_from_spec(spec, swagger_url=None):
+    """Extract base URL from OpenAPI/Swagger spec"""
+    # Try OpenAPI 3.0 format first (uses 'servers' array)
+    if "servers" in spec and spec["servers"]:
+        server_url = spec["servers"][0].get("url", "")
+        if server_url:
+            # Remove trailing slash
+            return server_url.rstrip("/")
+    
+    # Try Swagger 2.0 format (uses 'host', 'basePath', 'schemes')
+    host = spec.get("host", "")
     base_path = spec.get("basePath", "")
-    scheme = spec.get("schemes", ["https"])[0]
-    full_base_url = f"{scheme}://{base_url}{base_path}"
+    schemes = spec.get("schemes", ["https"])
+    scheme = schemes[0] if schemes else "https"
+    
+    if host:
+        full_url = f"{scheme}://{host}{base_path}".rstrip("/")
+        return full_url
+    
+    # Fallback: extract from swagger_url if provided
+    if swagger_url:
+        from urllib.parse import urlparse
+        parsed = urlparse(swagger_url)
+        # Remove /swagger/v1/swagger.json or similar paths
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        # Try to remove common swagger paths
+        path_parts = parsed.path.split("/")
+        if "swagger" in path_parts:
+            swagger_idx = path_parts.index("swagger")
+            base_path = "/".join(path_parts[:swagger_idx])
+            if base_path:
+                return f"{base}{base_path}".rstrip("/")
+        return base.rstrip("/")
+    
+    # Last resort fallback
+    return "https://api.example.com"
+
+
+def generate_playwright_tests(spec, endpoints):
+    # Get base URL from spec
+    from urllib.parse import urlparse
+    
+    # Try OpenAPI 3.0 format first
+    if "servers" in spec and spec["servers"]:
+        full_base_url = spec["servers"][0].get("url", "").rstrip("/")
+    else:
+        # Swagger 2.0 format
+        host = spec.get("host", "")
+        base_path = spec.get("basePath", "")
+        scheme = spec.get("schemes", ["https"])[0] if spec.get("schemes") else "https"
+        if host:
+            full_base_url = f"{scheme}://{host}{base_path}".rstrip("/")
+        else:
+            # Fallback: extract from config
+            from scripts.config_loader import get_swagger_url
+            swagger_url = get_swagger_url()
+            parsed = urlparse(swagger_url)
+            full_base_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    
+    # Get API name
+    api_info = spec.get("info", {})
+    api_title = api_info.get("title", "API")
     
     test_code = f"""import {{ test, expect }} from '@playwright/test';
 
 const BASE_URL = '{full_base_url}';
 const API_KEY = '{API_KEY}';
 
-// Store created resource IDs for reuse in later tests
-const resourceIds = {{}};
+let resourceIds: Record<string, any> = {{}};
 
-test.describe('API Tests - Generated from Swagger', () => {{
+test.describe.serial('{api_title} - API Tests', () => {{
 """
 
-    # Separate tests into two groups
-    post_tests = []  # Create resources first
-    dependent_tests = []  # Tests that need resource IDs
+    # Separate tests into three groups for proper ordering
+    post_tests = []  # POST endpoints - create resources first
+    get_list_tests = []  # GET endpoints without IDs - can run after POST
+    dependent_tests = []  # Tests that need resource IDs (GET/PUT/DELETE with {id})
     
     for ep in endpoints:
         path = ep['path']
@@ -71,19 +129,30 @@ test.describe('API Tests - Generated from Swagger', () => {{
         if path in ["/user/createWithList", "/user/createWithArray"]:
             continue
         
-        # Categorize tests
+        # Categorize tests properly
         if method == "POST" and "{" not in path:
+            # POST endpoints create resources - run first
             post_tests.append(ep)
         elif method == "GET" and "{" not in path:
-            post_tests.insert(0, ep)  # GET lists first
+            # GET list endpoints - run after POST but before dependent tests
+            get_list_tests.append(ep)
         elif "{" in path:
+            # Tests that need resource IDs (GET /pet/{id}, PUT /pet/{id}, DELETE /pet/{id})
+            dependent_tests.append(ep)
+        else:
+            # Other methods (PUT, DELETE without IDs) - add to dependent
             dependent_tests.append(ep)
     
-    # Generate POST tests first (to create resources)
+    # Generate tests in correct order:
+    # 1. POST tests first (to create resources)
     for ep in post_tests:
         test_code += generate_test_code(ep, use_stored_id=False)
     
-    # Generate dependent tests (use stored IDs)
+    # 2. GET list tests (don't need IDs, but run after POST)
+    for ep in get_list_tests:
+        test_code += generate_test_code(ep, use_stored_id=False)
+    
+    # 3. Dependent tests (use stored IDs from POST)
     for ep in dependent_tests:
         test_code += generate_test_code(ep, use_stored_id=True)
     
@@ -111,10 +180,11 @@ def generate_test_code(ep, use_stored_id=False):
     body_params = [p for p in parameters if p.get("in") == "body"]
     if body_params and method in ["POST", "PUT", "PATCH"]:
         schema = body_params[0].get("schema", {})
-        if schema.get("type") == "array":
-            payload = "[{}]"
+        # Generate payload based on endpoint
+        if "permission" in path.lower():
+            payload = "{ id: 1, name: 'TestResource' }"
         else:
-            payload = "{}"
+            payload = "{ id: 1 }"
     
     # Determine expected status
     expected_status = 200
@@ -164,9 +234,30 @@ def generate_test_code(ep, use_stored_id=False):
       return;
     }}"""
         
-        # Replace path parameters with stored IDs
-        dynamic_path = path.replace('{id}', '${resourceIds[\'' + resource_name + '\']}')
-        dynamic_path = dynamic_path.replace('{idBook}', '${resourceIds[\'Books\']}')
+        # Replace ALL path parameters with stored IDs dynamically
+        dynamic_path = path
+        
+        # Find all path parameters like {petId}, {orderId}, {username}, {id}, etc.
+        path_params = re.findall(r'\{(\w+)\}', path)
+        
+        for param in path_params:
+            # Map parameter names to resource keys
+            # Common patterns: {petId} -> 'pet', {orderId} -> 'order', {username} -> 'user'
+            param_lower = param.lower()
+            
+            # Determine which resource key to use
+            if 'pet' in param_lower:
+                resource_key = 'pet'
+            elif 'order' in param_lower:
+                resource_key = 'order'
+            elif 'user' in param_lower or 'username' in param_lower:
+                resource_key = 'user'
+            else:
+                # Default to the resource_name we extracted from path
+                resource_key = resource_name
+            
+            # Replace {paramName} with ${resourceIds['resourceKey']}
+            dynamic_path = dynamic_path.replace(f'{{{param}}}', f'${{resourceIds[\'{resource_key}\']}}')
         
         test_code += f"""
     
@@ -175,15 +266,27 @@ def generate_test_code(ep, use_stored_id=False):
         test_code += f"""
     const response = await request.{method.lower()}(`${{BASE_URL}}{path}`, {{"""
     
-    if headers:
+    # Determine if we need Content-Type header (POST/PUT/PATCH with body)
+    needs_content_type = body_params and method in ["POST", "PUT", "PATCH"]
+    
+    # Build request object
+    if needs_content_type or headers or payload:
         test_code += f"""
       headers: {{
-        'api_key': API_KEY,
-      }},"""
-    
-    if payload:
+        'Content-Type': 'application/json',"""
+        if headers:
+            test_code += f"""
+        'api_key': API_KEY,"""
         test_code += f"""
+      }},"""
+        
+        if payload:
+            test_code += f"""
       data: {payload},"""
+        elif needs_content_type:
+            # Add empty data object for POST/PUT/PATCH even if no payload generated
+            test_code += f"""
+      data: {{}},"""
     
     test_code += f"""
     }});
@@ -192,7 +295,24 @@ def generate_test_code(ep, use_stored_id=False):
     
     # Store ID if this is a POST request
     if method == "POST" and not use_stored_id and resource_name:
-        test_code += f"""
+        # Handle different response structures
+        if resource_name == "user":
+            test_code += f"""
+    
+    // Store the created resource ID for later tests
+    if (response.ok()) {{
+      const body = await response.json();
+      // User endpoints might return username instead of id
+      if (body.username !== undefined) {{
+        resourceIds['{resource_name}'] = body.username;
+        console.log('Created {resource_name} with username:', body.username);
+      }} else if (body.id !== undefined) {{
+        resourceIds['{resource_name}'] = body.id;
+        console.log('Created {resource_name} with ID:', body.id);
+      }}
+    }}"""
+        else:
+            test_code += f"""
     
     // Store the created resource ID for later tests
     if (response.ok()) {{
@@ -200,7 +320,13 @@ def generate_test_code(ep, use_stored_id=False):
       if (body.id !== undefined) {{
         resourceIds['{resource_name}'] = body.id;
         console.log('Created {resource_name} with ID:', body.id);
+      }} else {{
+        console.warn('POST succeeded but no ID found in response:', body);
       }}
+    }} else {{
+      console.error('POST failed with status:', response.status());
+      const errorBody = await response.text();
+      console.error('Error response:', errorBody);
     }}"""
     
     test_code += """
@@ -215,8 +341,17 @@ spec = load_swagger_spec()
 endpoints = get_endpoints(spec)
 playwright_tests = generate_playwright_tests(spec, endpoints)
 
+# Generate test file name from API spec
+api_info = spec.get("info", {})
+api_title = api_info.get("title", "API")
+api_name = "".join(c.lower() if c.isalnum() else "_" for c in api_title).strip("_")
+if not api_name:
+    host = spec.get("host", "")
+    api_name = host.split(".")[0] if host and "." in host else "api_tests"
+
+output_file = project_root / "tests" / f"{api_name}.spec.ts"
+
 # Save to file
-output_file = project_root / "tests" / "petstore.spec.ts"
 os.makedirs(output_file.parent, exist_ok=True)
 with open(output_file, "w") as f:
     f.write(playwright_tests)

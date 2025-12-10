@@ -211,16 +211,57 @@ Return ONLY the test code, no explanations."""
     return response
 
 
+def get_base_url_from_spec(spec, swagger_url=None):
+    """Extract base URL from OpenAPI/Swagger spec"""
+    # Try OpenAPI 3.0 format first (uses 'servers' array)
+    if "servers" in spec and spec["servers"]:
+        server_url = spec["servers"][0].get("url", "")
+        if server_url:
+            # Remove trailing slash
+            return server_url.rstrip("/")
+    
+    # Try Swagger 2.0 format (uses 'host', 'basePath', 'schemes')
+    host = spec.get("host", "")
+    base_path = spec.get("basePath", "")
+    schemes = spec.get("schemes", ["https"])
+    scheme = schemes[0] if schemes else "https"
+    
+    if host:
+        full_url = f"{scheme}://{host}{base_path}".rstrip("/")
+        return full_url
+    
+    # Fallback: extract from swagger_url if provided
+    if swagger_url:
+        from urllib.parse import urlparse
+        parsed = urlparse(swagger_url)
+        # Remove /swagger/v1/swagger.json or similar paths
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        # Try to remove common swagger paths
+        path_parts = parsed.path.split("/")
+        if "swagger" in path_parts:
+            swagger_idx = path_parts.index("swagger")
+            base_path = "/".join(path_parts[:swagger_idx])
+            if base_path:
+                return f"{base}{base_path}".rstrip("/")
+        return base.rstrip("/")
+    
+    # Last resort fallback
+    return "https://api.example.com"
+
+
 def use_playwright_mcp_tools(spec, endpoints):
     """Use Playwright MCP tools programmatically to generate tests"""
     # This would require connecting to Playwright MCP server
     # For now, we'll use the LLM agent approach with Playwright test patterns
     print("🔧 Generating tests using local patterns...")
     
-    base_url = spec.get("host", "petstore.swagger.io")
-    base_path = spec.get("basePath", "")
-    scheme = spec.get("schemes", ["https"])[0]
-    full_base_url = f"{scheme}://{base_url}{base_path}"
+    # Get base URL from spec (handles both OpenAPI 3.0 and Swagger 2.0)
+    full_base_url = get_base_url_from_spec(spec, SWAGGER_URL)
+    print(f"📍 Using base URL: {full_base_url}")
+    
+    # Get API name for test suite naming
+    api_info = spec.get("info", {})
+    api_title = api_info.get("title", "API")
     
     # Generate test plan with agent
     print("📋 Generating test plan with AI agent...")
@@ -243,7 +284,7 @@ AI-Generated Test Plan:
 */
 
 // Use serial mode to run tests sequentially and share state
-test.describe.serial('API Tests - Generated', () => {{
+test.describe.serial('{api_title} - API Tests', () => {{
 """
     
     # Group endpoints by resource and method
@@ -454,8 +495,17 @@ else:
     endpoints = get_endpoints(spec)
     playwright_tests = use_playwright_mcp_tools(spec, endpoints)
 
-# Save to file
-output_file = project_root / "tests" / "petstore.spec.ts"
+# Generate test file name from API spec
+api_info = spec.get("info", {})
+api_title = api_info.get("title", "API")
+api_name = "".join(c.lower() if c.isalnum() else "_" for c in api_title).strip("_")
+if not api_name:
+    host = spec.get("host", "")
+    api_name = host.split(".")[0] if host and "." in host else "api_tests"
+
+test_filename = f"{api_name}.spec.ts"
+output_file = project_root / "tests" / test_filename
+
 os.makedirs(output_file.parent, exist_ok=True)
 with open(output_file, "w") as f:
     f.write(playwright_tests)
