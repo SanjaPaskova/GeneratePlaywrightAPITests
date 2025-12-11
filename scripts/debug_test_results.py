@@ -10,16 +10,38 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
+# Ensure we can import project modules when running from any cwd
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from scripts.config_loader import load_config
+
 # Uses Playwright test runner directly
 
-# Load configuration
-# Get project root (one level up from agents/)
-project_root = Path(__file__).parent.parent
-config_path = project_root / "config.json"
-with open(config_path, "r") as f:
-    config = json.load(f)
+config = load_config()
 
-TEST_FILE = sys.argv[1] if len(sys.argv) > 1 else str(project_root / "tests" / "petstore.spec.ts")
+# Optional LLM setup
+LLM_PROVIDER = config.get("llm_provider", "openai")
+OPENAI_API_KEY = config.get("openai_api_key")
+ANTHROPIC_API_KEY = config.get("anthropic_api_key")
+MODEL = config.get("model", "gpt-4o")
+
+client = None
+if LLM_PROVIDER == "openai" and OPENAI_API_KEY:
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+    except Exception:
+        client = None
+elif LLM_PROVIDER == "anthropic" and ANTHROPIC_API_KEY:
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    except Exception:
+        client = None
+
+TEST_FILE = sys.argv[1] if len(sys.argv) > 1 else str(project_root / "tests" / "spec.ts")
 PROJECT = sys.argv[2] if len(sys.argv) > 2 else "chromium"
 
 
@@ -54,13 +76,20 @@ class TestDebugger:
             return self.analyze_error_output(str(e), e)
     
     def run_tests_direct(self):
-        """Fallback: Run tests directly without MCP helper"""
-        print("⚠️  MCP helper not found, using direct Playwright execution...\n")
+        """Run tests directly with Playwright JSON reporter"""
+        print("▶️  Running Playwright tests directly...\n")
         try:
             # Ensure TEST_FILE is absolute or relative to project root
             test_file_path = TEST_FILE if os.path.isabs(TEST_FILE) else str(project_root / TEST_FILE)
+            # If the path doesn't exist, default to the tests/ folder
+            if not os.path.exists(test_file_path):
+                test_file_path = str(project_root / "tests")
+            cmd = ["npx", "playwright", "test", test_file_path, "--reporter=json"]
+            # Only add project flag if explicitly provided
+            if PROJECT:
+                cmd.append(f"--project={PROJECT}")
             result = subprocess.run(
-                ["npx", "playwright", "test", test_file_path, f"--project={PROJECT}", "--reporter=json"],
+                cmd,
                 capture_output=True,
                 text=True,
                 cwd=str(project_root)
@@ -68,9 +97,16 @@ class TestDebugger:
 
             try:
                 json_output = json.loads(result.stdout)
+                # If no suites/specs found, treat as discovery failure
+                if not json_output.get("suites") and not json_output.get("specs"):
+                    return self.analyze_error_output("No tests discovered. Check file path or Playwright configuration.", None)
                 return self.analyze_results(json_output)
             except json.JSONDecodeError:
-                return self.analyze_text_output(result.stdout + result.stderr)
+                # Fallback: analyze raw text output
+                output_text = (result.stdout or "") + (result.stderr or "")
+                if not output_text.strip():
+                    return self.analyze_error_output("No output from Playwright. Ensure Playwright is installed and tests exist.", None)
+                return self.analyze_text_output(output_text)
         except Exception as e:
             return self.analyze_error_output(str(e), e)
 
@@ -85,6 +121,8 @@ class TestDebugger:
             for spec in json_results["specs"]:
                 self.process_spec(spec)
 
+        # Optionally use LLM to summarize and suggest fixes
+        self.apply_llm_analysis()
         self.generate_report()
         return self.results
 
@@ -304,6 +342,7 @@ class TestDebugger:
                 in_failure = False
                 current_failure = None
 
+        self.apply_llm_analysis()
         self.generate_report()
         return self.results
 
@@ -331,8 +370,90 @@ class TestDebugger:
             ]
         })
 
+        self.apply_llm_analysis()
         self.generate_report()
         return self.results
+
+    def apply_llm_analysis(self):
+        """Use LLM (if configured) to provide deeper insights and suggestions."""
+        if not client:
+            return
+
+        try:
+            summary = {
+                "total": self.results["total"],
+                "passed": self.results["passed"],
+                "failed": self.results["failed"],
+                "skipped": self.results["skipped"],
+            }
+            failures = self.results.get("failures", [])
+            errors = self.results.get("errors", [])
+
+            # Limit payload size
+            failures_brief = [
+                {
+                    "test": f.get("test"),
+                    "file": f.get("file"),
+                    "status": f.get("status"),
+                    "errorMessage": (f.get("errorMessage") or "")[:800],
+                }
+                for f in failures[:30]
+            ]
+            errors_brief = [
+                {
+                    "message": e.get("message"),
+                    "output": (e.get("output") or "")[:800],
+                }
+                for e in errors[:10]
+            ]
+
+            system = (
+                "You are an expert Playwright API test debugger. "
+                "Analyze failures and propose concrete, actionable fixes. "
+                "Classify issues (network, endpoint, auth, request schema, server, assertion, dependency). "
+                "Suggest code changes (timeouts, headers, payloads), test sequencing, and config tweaks."
+            )
+            user = (
+                f"Summary: {json.dumps(summary)}\n\n"
+                f"Failures: {json.dumps(failures_brief, indent=2)}\n\n"
+                f"Errors: {json.dumps(errors_brief, indent=2)}\n\n"
+                "Return a concise analysis with bullets: Root Cause, Evidence, Fixes, Next Checks."
+            )
+
+            ai_text = None
+            if LLM_PROVIDER == "anthropic":
+                try:
+                    resp = client.messages.create(
+                        model=MODEL,
+                        max_tokens=1200,
+                        temperature=0,
+                        system=system,
+                        messages=[{"role": "user", "content": user}],
+                    )
+                    ai_text = resp.content[0].text
+                except Exception:
+                    ai_text = None
+            elif LLM_PROVIDER == "openai":
+                try:
+                    resp = client.chat.completions.create(
+                        model=MODEL,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        temperature=0,
+                        max_tokens=1200,
+                    )
+                    ai_text = resp.choices[0].message.content
+                except Exception:
+                    ai_text = None
+
+            if ai_text:
+                # Attach AI analysis to results for inclusion in report
+                self.results.setdefault("aiAnalysis", ai_text)
+        except Exception:
+            # Non-blocking
+            pass
 
     def generate_report(self):
         """Generate comprehensive debug report"""
@@ -351,7 +472,8 @@ class TestDebugger:
             "failures": self.results["failures"],
             "errors": self.results["errors"],
             "timestamp": datetime.now().isoformat(),
-            "toolName": "Playwright Test Debugger"
+            "toolName": "Playwright Test Debugger",
+            "ai": self.results.get("aiAnalysis")
         }
 
         # Generate text report
@@ -411,20 +533,34 @@ EXECUTION ERRORS
                     for action in suggestion["actions"]:
                         text_report += f"   • {action}\n"
 
-        if report["summary"]["failed"] == 0 and not report["errors"]:
+        # Only show "ALL TESTS PASSED" when at least one test ran
+        if report["summary"]["failed"] == 0 and not report["errors"] and report["summary"]["total"] > 0:
             text_report += f"""
 {'='*80}
 ✅ ALL TESTS PASSED!
 {'='*80}
 """
 
-        text_report += f"""
+        # AI section
+        if report.get("ai"):
+            text_report += f"""
 {'='*80}
 RECOMMENDATIONS
 {'='*80}
-"""
-
+    {report.get("ai")}
+    """
+        
         recommendations = []
+
+        # If no tests were discovered, provide discovery guidance and skip pass-rate warning
+        if report["summary"]["total"] == 0:
+            recommendations.append("❗ No tests discovered. Verify the test file path and Playwright configuration.")
+            recommendations.append("• Ensure the file exists and matches Playwright's test patterns.")
+            recommendations.append("• Try running: npx playwright test tests --reporter=json")
+            recommendations.append("• If using TypeScript, ensure ts-node is not required for API tests.")
+        else:
+            if report["summary"]["passRate"] < 50:
+                recommendations.append("⚠️  Less than 50% of tests are passing. Review test suite configuration.")
 
         if report["summary"]["passRate"] < 50:
             recommendations.append("⚠️  Less than 50% of tests are passing. Review test suite configuration.")

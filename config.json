@@ -1,7 +1,8 @@
 {
     "swagger_url": "https://petstore.swagger.io/v2/swagger.json",
-    "api_key": "special-key",
-    "llm_provider": "none",
-    "model": "gpt-4o",
+    "api_key": "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",
+    "llm_provider": "openai",
+    "openai_api_key": "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",
+    "model": "o4",
     "fallback_to_schema": true
 }
