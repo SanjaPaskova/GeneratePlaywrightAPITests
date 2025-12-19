@@ -50,6 +50,11 @@ npx playwright install
 python scripts/generate_tests_main_script.py
 ```
 
+Run explicitly with the virtualenv Python (absolute path):
+```bash
+/Users/ritech/GeneratePlaywrightAPITests/venv/bin/python scripts/generate_tests_main_script.py
+```
+
 **Option B: Basic Generator**
 ```bash
 # Ensure venv is activated

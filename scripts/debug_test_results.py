@@ -45,6 +45,29 @@ TEST_FILE = sys.argv[1] if len(sys.argv) > 1 else str(project_root / "tests" / "
 PROJECT = sys.argv[2] if len(sys.argv) > 2 else "chromium"
 
 
+# Utilities
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+def strip_ansi(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    return ANSI_ESCAPE_RE.sub("", text)
+
+def extract_expected_received(text: str) -> Tuple[str, str] | Tuple[None, None]:
+    if not text:
+        return (None, None)
+    clean = strip_ansi(text)
+    # Common Playwright expect() format with newlines
+    m = re.search(r"Expected:\s*([^\r\n]+)[\r\n]+\s*Received:\s*([^\r\n]+)", clean, re.IGNORECASE)
+    if m:
+        return (m.group(1).strip(), m.group(2).strip())
+    # Fallback single-line variant
+    m2 = re.search(r"Expected:\s*([^\r\n]+)\s+Received:\s*([^\r\n]+)", clean, re.IGNORECASE)
+    if m2:
+        return (m2.group(1).strip(), m2.group(2).strip())
+    return (None, None)
+
+
 class TestDebugger:
     def __init__(self):
         self.results = {
@@ -161,6 +184,8 @@ class TestDebugger:
             "error": None,
             "errorMessage": "",
             "errorDetails": "",
+            "expected": None,
+            "received": None,
             "duration": result.get("duration", 0),
             "retry": result.get("retry", 0),
             "suggestions": []
@@ -169,8 +194,14 @@ class TestDebugger:
         if "error" in result:
             error = result["error"]
             failure["error"] = error
-            failure["errorMessage"] = error.get("message", "")
-            failure["errorDetails"] = error.get("stack") or error.get("message", "")
+            raw_message = error.get("message", "")
+            raw_details = error.get("stack") or raw_message
+            # Sanitize ANSI codes for readability
+            failure["errorMessage"] = strip_ansi(raw_message)
+            failure["errorDetails"] = strip_ansi(raw_details)
+            # Extract Expected/Received if present
+            exp, rec = extract_expected_received(raw_message or raw_details)
+            failure["expected"], failure["received"] = exp, rec
             
             # Extract location info
             if "location" in error:
@@ -312,6 +343,8 @@ class TestDebugger:
         """Analyze text output as fallback"""
         print("📊 Analyzing test output...\n")
 
+        # Remove ANSI codes for cleaner parsing
+        output = strip_ansi(output)
         lines = output.split("\n")
         in_failure = False
         current_failure = None
@@ -331,9 +364,13 @@ class TestDebugger:
                     "suggestions": []
                 }
 
-            if in_failure and ("Error:" in line or "at " in line):
+            if in_failure and ("Error:" in line or "at " in line or "Expected:" in line or "Received:" in line):
                 if current_failure:
                     current_failure["errorMessage"] += line + "\n"
+                    exp, rec = extract_expected_received(current_failure["errorMessage"])
+                    if exp or rec:
+                        current_failure["expected"] = exp
+                        current_failure["received"] = rec
 
             if in_failure and line.strip() == "":
                 if current_failure:
@@ -505,8 +542,15 @@ FAILED TESTS ANALYSIS
    Duration: {failure['duration']}ms
    Retry: {failure['retry']}
 
-   Error: {failure['errorMessage'] or 'No error message'}
-
+    Error: {failure['errorMessage'] or 'No error message'}
+"""
+                # If we parsed Expected/Received, add them clearly on their own lines
+                if failure.get('expected') or failure.get('received'):
+                    text_report += f"""
+   Expected: {failure.get('expected') or '—'}
+   Received: {failure.get('received') or '—'}
+"""
+                text_report += """
     🔍 Debugging Suggestions:
 """
 
