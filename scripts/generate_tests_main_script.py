@@ -16,54 +16,72 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# Now import config_loader (this will work from any directory)
-from scripts.config_loader import load_config, get_swagger_url
+# Load configuration directly from config.json (no loader)
+def _load_config_from_json(cfg_path: Path) -> dict:
+    try:
+        with open(cfg_path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"⚠️  config.json not found at {cfg_path}. Using safe defaults.")
+        return {}
+    except Exception as e:
+        print(f"⚠️  Failed to read config.json: {e}. Using safe defaults.")
+        return {}
 
-# Load configuration
-config = load_config()
+config_path = project_root / "config.json"
+_cfg = _load_config_from_json(config_path)
 
-SWAGGER_URL = get_swagger_url()
-API_KEY = config.get("api_key", "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")
-LLM_PROVIDER = config.get("llm_provider", "openai")
-OPENAI_API_KEY = config.get("openai_api_key", "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")
-ANTHROPIC_API_KEY = config.get("anthropic_api_key")
-MODEL = config.get("model", "gpt-4o")
-FALLBACK_TO_SCHEMA = config.get("fallback_to_schema", True)
+SWAGGER_URL = _cfg.get("swagger_url", "https://petstore.swagger.io/v2/swagger.json")
+LLM_PROVIDER = _cfg.get("llm_provider", "none")
+OPENAI_API_KEY = _cfg.get("openai_api_key", "")
+ANTHROPIC_API_KEY = _cfg.get("anthropic_api_key", "")
+MODEL = _cfg.get("model", "gpt-4o")
+# Normalize common model aliases for provider compatibility
+MODEL_ALIASES = {
+    # OpenAI
+    "o4": "gpt-4o",
+    "gpt4o": "gpt-4o",
+    "gpt-40": "gpt-4o",
+    "got-40": "gpt-4o",
+}
+MODEL = MODEL_ALIASES.get(MODEL, MODEL)
+FALLBACK_TO_SCHEMA = bool(_cfg.get("fallback_to_schema", True))
+USE_AI_FOR_TESTS = bool(_cfg.get("use_ai_for_tests", False))
 
 # Debug: Print config status
 if LLM_PROVIDER != "none":
     print(f"🔧 Config: LLM Provider = {LLM_PROVIDER}")
     print(f"🔧 Config: OpenAI API Key present = {bool(OPENAI_API_KEY)}")
     print(f"🔧 Config: Anthropic API Key present = {bool(ANTHROPIC_API_KEY)}")
+    print(f"🔧 Config: use_ai_for_tests = {bool(USE_AI_FOR_TESTS)}")
 
 # Initialize LLM client based on provider
 client = None
-if LLM_PROVIDER == "anthropic" and ANTHROPIC_API_KEY:
-    try:
-        from anthropic import Anthropic
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        print(f"🤖 Using Anthropic Claude: {MODEL}")
-    except ImportError:
-        print("⚠️  Anthropic package not installed. Run: pip install anthropic")
-        sys.exit(1)
-elif LLM_PROVIDER == "openai" and OPENAI_API_KEY:
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        print(f"🤖 Using OpenAI: {MODEL}")
-    except ImportError as e:
-        print(f"⚠️  OpenAI package not installed. Run: pip install openai")
-        print(f"   Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"⚠️  Error initializing OpenAI client: {e}")
-        sys.exit(1)
-elif LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
-    print("⚠️  OpenAI provider selected but 'openai_api_key' not found in config.json")
-    print("   Please add 'openai_api_key' to your config.json")
-elif LLM_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
-    print("⚠️  Anthropic provider selected but 'anthropic_api_key' not found in config.json")
-    print("   Please add 'anthropic_api_key' to your config.json")
+# Only initialize AI client when AI-based test generation is enabled
+if USE_AI_FOR_TESTS:
+    if LLM_PROVIDER == "anthropic" and ANTHROPIC_API_KEY:
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=ANTHROPIC_API_KEY)
+            print(f"🤖 Using Anthropic Claude: {MODEL}")
+        except ImportError:
+            print("⚠️  Anthropic package not installed. Run: pip install anthropic")
+    elif LLM_PROVIDER == "openai" and OPENAI_API_KEY:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            print(f"🤖 Using OpenAI: {MODEL}")
+        except ImportError as e:
+            print(f"⚠️  OpenAI package not installed. Run: pip install openai")
+            print(f"   Error: {e}")
+        except Exception as e:
+            print(f"⚠️  Error initializing OpenAI client: {e}")
+    elif LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
+        print("⚠️  OpenAI provider selected but 'openai_api_key' not found in config.json")
+        print("   Please add 'openai_api_key' to your config.json")
+    elif LLM_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
+        print("⚠️  Anthropic provider selected but 'anthropic_api_key' not found in config.json")
+        print("   Please add 'anthropic_api_key' to your config.json")
 
 
 def load_swagger_spec(url=SWAGGER_URL):
@@ -110,16 +128,50 @@ def call_llm(system_prompt, user_prompt, temperature=0.5):
             )
             return response.content[0].text
         elif LLM_PROVIDER == "openai":
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=temperature,
-                max_tokens=4000
-            )
-            return response.choices[0].message.content
+            # Use Responses API for reasoning models (o1 family)
+            if MODEL.startswith("o1"):
+                try:
+                    resp = client.responses.create(
+                        model=MODEL,
+                        input=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        temperature=temperature,
+                        max_output_tokens=4000,
+                    )
+                    # Prefer aggregated text output if available
+                    if hasattr(resp, "output_text") and resp.output_text:
+                        return resp.output_text
+                    # Fallback: attempt to stitch content
+                    if hasattr(resp, "output") and resp.output:
+                        parts = []
+                        for block in resp.output:
+                            content = getattr(block, "content", None)
+                            if isinstance(content, list):
+                                for item in content:
+                                    text = getattr(item, "text", None)
+                                    if text and hasattr(text, "value"):
+                                        parts.append(text.value)
+                            elif isinstance(content, str):
+                                parts.append(content)
+                        return "\n".join(parts) if parts else None
+                    return None
+                except Exception as e:
+                    print(f"   ⚠️  OpenAI Responses API error (model={MODEL}): {e}")
+                    return None
+            else:
+                # Default: Chat Completions for GPT-4o family
+                response = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=temperature,
+                    max_tokens=4000
+                )
+                return response.choices[0].message.content
     except Exception as e:
         print(f"   ⚠️  LLM Error: {e}")
         return None
@@ -306,18 +358,13 @@ def use_playwright_mcp_tools(spec, endpoints):
     api_info = spec.get("info", {})
     api_title = api_info.get("title", "API")
     
-    # Generate test plan with agent (for logging only, not in code)
-    print("📋 Generating test plan with AI agent...")
-    test_plan = generate_test_plan_with_agent(spec, endpoints)
-    if test_plan:
-        print(f"\n📝 Test Plan:\n{test_plan}\n")
+    # Skip AI plan generation entirely to focus on producing tests
     
-    # Generate tests - use API_KEY from config (not OpenAI key)
+    # Generate tests (no API key header used by default)
     # DO NOT include test plan in generated code
     test_code = f"""import {{ test, expect }} from '@playwright/test';
 
 const BASE_URL = '{full_base_url}';
-const API_KEY = '{API_KEY}';
 
 let resourceIds: Record<string, any> = {{}};
 
@@ -343,63 +390,108 @@ test.describe('{api_title} - API Tests', () => {{
         if path in ["/user/createWithList", "/user/createWithArray"]:
             continue
         
-        # Categorize by resource
-        if 'pet' in path.lower():
-            if method == 'POST' and '{' not in path:
-                resource_groups['pet']['post'].append(ep)
-            elif method == 'GET':
-                resource_groups['pet']['get'].append(ep)
-            elif method == 'PUT':
-                resource_groups['pet']['put'].append(ep)
-            elif method == 'DELETE':
-                resource_groups['pet']['delete'].append(ep)
-        elif 'order' in path.lower() or 'store' in path.lower():
-            if method == 'POST' and '{' not in path:
-                resource_groups['order']['post'].append(ep)
-            elif method == 'GET':
-                resource_groups['order']['get'].append(ep)
-            elif method == 'PUT':
-                resource_groups['order']['put'].append(ep)
-            elif method == 'DELETE':
-                resource_groups['order']['delete'].append(ep)
-        elif 'user' in path.lower():
-            if method == 'POST' and '{' not in path:
-                resource_groups['user']['post'].append(ep)
-            elif method == 'GET':
-                resource_groups['user']['get'].append(ep)
-            elif method == 'PUT':
-                resource_groups['user']['put'].append(ep)
-            elif method == 'DELETE':
-                resource_groups['user']['delete'].append(ep)
+        # Categorize by resource using mapping; unknown or unsupported methods go to 'other'
+        lower_path = path.lower()
+        resource_map = {
+            'pet': ['pet'],
+            'order': ['order', 'store'],
+            'user': ['user'],
+        }
+
+        target_group = None
+        for key, keywords in resource_map.items():
+            if any(k in lower_path for k in keywords):
+                target_group = key
+                break
+
+        if not target_group:
+            resource_groups['other'].append(ep)
+            continue
+
+        # Determine method bucket, respecting POST-without-path-param rule
+        bucket = None
+        if method == 'POST' and '{' not in path:
+            bucket = 'post'
+        elif method in ['GET', 'PUT', 'DELETE']:
+            bucket = method.lower()
+
+        if bucket:
+            resource_groups[target_group][bucket].append(ep)
         else:
+            # Place PATCH and any other methods not explicitly handled into 'other'
             resource_groups['other'].append(ep)
     
     # Generate tests in order: POST → PUT → DELETE → GET
     # Use basic generation for reliability (LLM causes issues)
     for resource in ['pet', 'order', 'user']:
         for ep in resource_groups[resource]['post']:
-            test_code += generate_basic_test(ep, use_stored_id=False)
+            if USE_AI_FOR_TESTS and client:
+                generated = generate_test_with_agent(ep)
+                if generated and generated.strip().startswith("test("):
+                    test_code += ("\n  " + generated + "\n")
+                else:
+                    test_code += generate_basic_test(ep, use_stored_id=False)
+            else:
+                test_code += generate_basic_test(ep, use_stored_id=False)
         
         for ep in resource_groups[resource]['put']:
             needs_id = '{' in ep['path']
-            test_code += generate_basic_test(ep, use_stored_id=needs_id)
+            if USE_AI_FOR_TESTS and client:
+                generated = generate_test_with_agent(ep)
+                if generated and generated.strip().startswith("test("):
+                    test_code += ("\n  " + generated + "\n")
+                else:
+                    test_code += generate_basic_test(ep, use_stored_id=needs_id)
+            else:
+                test_code += generate_basic_test(ep, use_stored_id=needs_id)
         
         for ep in resource_groups[resource]['delete']:
             needs_id = '{' in ep['path']
-            test_code += generate_basic_test(ep, use_stored_id=needs_id)
+            if USE_AI_FOR_TESTS and client:
+                generated = generate_test_with_agent(ep)
+                if generated and generated.strip().startswith("test("):
+                    test_code += ("\n  " + generated + "\n")
+                else:
+                    test_code += generate_basic_test(ep, use_stored_id=needs_id)
+            else:
+                test_code += generate_basic_test(ep, use_stored_id=needs_id)
         
         for ep in resource_groups[resource]['get']:
             needs_id = '{' in ep['path']
-            test_code += generate_basic_test(ep, use_stored_id=needs_id)
+            if USE_AI_FOR_TESTS and client:
+                generated = generate_test_with_agent(ep)
+                if generated and generated.strip().startswith("test("):
+                    test_code += ("\n  " + generated + "\n")
+                else:
+                    test_code += generate_basic_test(ep, use_stored_id=needs_id)
+            else:
+                test_code += generate_basic_test(ep, use_stored_id=needs_id)
     
     # Add other tests
     for ep in resource_groups['other']:
-        test_code += generate_basic_test(ep, use_stored_id=False)
+        if USE_AI_FOR_TESTS and client:
+            generated = generate_test_with_agent(ep)
+            if generated and generated.strip().startswith("test("):
+                test_code += ("\n  " + generated + "\n")
+            else:
+                test_code += generate_basic_test(ep, use_stored_id=False)
+        else:
+            test_code += generate_basic_test(ep, use_stored_id=False)
     
     test_code += """});
 """
     
-    return test_code
+    # Finalize and validate: ensure at least one test() exists; else fallback to basic generator
+    final_code = test_code
+    if "test(" not in final_code:
+        print("⚠️  No valid tests generated via AI; falling back to basic generator.")
+        try:
+            sys.path.insert(0, str(project_root))
+            from generate_playwright_tests import generate_playwright_tests
+            final_code = generate_playwright_tests(spec, endpoints)
+        except Exception as e:
+            print(f"❌ Fallback generation failed: {e}")
+    return final_code
 
 
 def generate_basic_test(ep, use_stored_id=False):
@@ -491,9 +583,8 @@ print("=" * 80)
 print("🚀 Playwright Test Generator")
 print("=" * 80)
 
-if LLM_PROVIDER == "none":
-    print("\n⚠️  LLM provider set to 'none'. Using basic test generation.")
-    print("   Set 'llm_provider' to 'openai' or 'anthropic' in config.json to use agent mode.\n")
+if LLM_PROVIDER == "none" or not USE_AI_FOR_TESTS:
+    print("\n⚠️  AI-based test generation disabled. Using basic test generation.")
     
     spec = load_swagger_spec()
     endpoints = get_endpoints(spec)
@@ -502,9 +593,14 @@ if LLM_PROVIDER == "none":
     from generate_playwright_tests import generate_playwright_tests
     playwright_tests = generate_playwright_tests(spec, endpoints)
 elif not client:
-    print("\n❌ LLM provider configured but client initialization failed.")
-    print("   Please check your API keys and ensure required packages are installed.\n")
-    sys.exit(1)
+    print("\n⚠️  AI client not available. Falling back to basic generation.")
+    
+    spec = load_swagger_spec()
+    endpoints = get_endpoints(spec)
+    # Use basic generation
+    sys.path.insert(0, str(project_root))
+    from generate_playwright_tests import generate_playwright_tests
+    playwright_tests = generate_playwright_tests(spec, endpoints)
 else:
     print(f"\n🤖 Using {LLM_PROVIDER.upper()} agent: {MODEL}")
     print(f"📡 Loading API spec from: {SWAGGER_URL}\n")

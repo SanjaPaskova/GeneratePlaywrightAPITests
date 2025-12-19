@@ -74,10 +74,10 @@ Edit `config.json` to set your Swagger/OpenAPI URL and LLM provider:
 ```json
 {
   "swagger_url": "https://petstore.swagger.io/v2/swagger.json",
-  "api_key": "special-key",
   "llm_provider": "none",
   "model": "gpt-4o",
-  "fallback_to_schema": true
+   "fallback_to_schema": true,
+   "use_ai_for_tests": false
 }
 ```
 
@@ -85,13 +85,30 @@ Edit `config.json` to set your Swagger/OpenAPI URL and LLM provider:
 ```json
 {
   "swagger_url": "https://petstore.swagger.io/v2/swagger.json",
-  "api_key": "special-key",
   "llm_provider": "openai",
   "openai_api_key": "your-api-key-here",
   "model": "gpt-4o",
-  "fallback_to_schema": true
+   "fallback_to_schema": true,
+   "use_ai_for_tests": true
 }
 ```
+
+**Anthropic (Claude) Example:**
+```json
+{
+   "swagger_url": "https://petstore.swagger.io/v2/swagger.json",
+   "llm_provider": "anthropic",
+   "anthropic_api_key": "your-api-key-here",
+   "model": "claude-3.5",
+   "fallback_to_schema": true,
+   "use_ai_for_tests": true
+}
+```
+
+Notes:
+- Set `use_ai_for_tests` to `true` to enable AI-generated tests. If the AI client isn’t available or the provider package isn’t installed, the generator falls back to basic schema-based tests.
+- Supported providers: `none`, `openai`, `anthropic`.
+- Ensure you `pip install openai` or `pip install anthropic` when using AI.
 
 ## How it works
 - The agent parses the OpenAPI spec and generates tests for each endpoint.
