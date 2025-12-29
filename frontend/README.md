@@ -79,3 +79,4 @@ frontend/
 Currently uses mock data for demonstration. Backend API integration needed for production use.
 
 
+
