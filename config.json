@@ -1,9 +1,9 @@
 {
     "swagger_url": "https://petstore.swagger.io/v2/swagger.json",
-    "llm_provider": "openai",
+    "llm_provider": "none",
     "openai_api_key": "",
     "anthropic_api_key": "",
     "model": "gpt-4o",
     "fallback_to_schema": true,
-    "use_ai_for_tests": true
+    "use_ai_for_tests": false
 }
