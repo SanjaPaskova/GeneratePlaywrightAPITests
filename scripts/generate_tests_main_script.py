@@ -430,9 +430,9 @@ test.describe('{api_title} - API Tests', () => {{
                 if generated and generated.strip().startswith("test("):
                     test_code += ("\n  " + generated + "\n")
                 else:
-                    test_code += generate_basic_test(ep, use_stored_id=False)
+                    test_code += generate_basic_test(ep, spec, use_stored_id=False)
             else:
-                test_code += generate_basic_test(ep, use_stored_id=False)
+                test_code += generate_basic_test(ep, spec, use_stored_id=False)
         
         for ep in resource_groups[resource]['put']:
             needs_id = '{' in ep['path']
@@ -441,9 +441,9 @@ test.describe('{api_title} - API Tests', () => {{
                 if generated and generated.strip().startswith("test("):
                     test_code += ("\n  " + generated + "\n")
                 else:
-                    test_code += generate_basic_test(ep, use_stored_id=needs_id)
+                    test_code += generate_basic_test(ep, spec, use_stored_id=needs_id)
             else:
-                test_code += generate_basic_test(ep, use_stored_id=needs_id)
+                test_code += generate_basic_test(ep, spec, use_stored_id=needs_id)
         
         for ep in resource_groups[resource]['delete']:
             needs_id = '{' in ep['path']
@@ -452,9 +452,9 @@ test.describe('{api_title} - API Tests', () => {{
                 if generated and generated.strip().startswith("test("):
                     test_code += ("\n  " + generated + "\n")
                 else:
-                    test_code += generate_basic_test(ep, use_stored_id=needs_id)
+                    test_code += generate_basic_test(ep, spec, use_stored_id=needs_id)
             else:
-                test_code += generate_basic_test(ep, use_stored_id=needs_id)
+                test_code += generate_basic_test(ep, spec, use_stored_id=needs_id)
         
         for ep in resource_groups[resource]['get']:
             needs_id = '{' in ep['path']
@@ -463,9 +463,9 @@ test.describe('{api_title} - API Tests', () => {{
                 if generated and generated.strip().startswith("test("):
                     test_code += ("\n  " + generated + "\n")
                 else:
-                    test_code += generate_basic_test(ep, use_stored_id=needs_id)
+                    test_code += generate_basic_test(ep, spec, use_stored_id=needs_id)
             else:
-                test_code += generate_basic_test(ep, use_stored_id=needs_id)
+                test_code += generate_basic_test(ep, spec, use_stored_id=needs_id)
     
     # Add other tests
     for ep in resource_groups['other']:
@@ -474,9 +474,9 @@ test.describe('{api_title} - API Tests', () => {{
             if generated and generated.strip().startswith("test("):
                 test_code += ("\n  " + generated + "\n")
             else:
-                test_code += generate_basic_test(ep, use_stored_id=False)
+                test_code += generate_basic_test(ep, spec, use_stored_id=False)
         else:
-            test_code += generate_basic_test(ep, use_stored_id=False)
+            test_code += generate_basic_test(ep, spec, use_stored_id=False)
     
     test_code += """});
 """
@@ -494,12 +494,13 @@ test.describe('{api_title} - API Tests', () => {{
     return final_code
 
 
-def generate_basic_test(ep, use_stored_id=False):
-    """Fallback basic test generation"""
+def generate_basic_test(ep, spec, use_stored_id=False):
+    """Fallback basic test generation with schema-based payloads"""
     path = ep['path']
     method = ep['method']
     summary = ep['summary']
     responses = ep['responses']
+    parameters = ep.get('parameters', [])
     
     expected_status = 200
     if "200" in responses:
@@ -524,13 +525,128 @@ def generate_basic_test(ep, use_stored_id=False):
     if not resource_name and method == "POST":
         resource_name = path_parts[-1]
     
+    # Generate payload from schema
+    payload = None
+    body_params = [p for p in parameters if p.get("in") == "body"]
+    
+    def resolve_ref(ref):
+        """Resolve $ref references in schema"""
+        if not ref or not ref.startswith("#/"):
+            return {}
+        parts = ref.lstrip("#/").split("/")
+        obj = spec
+        for part in parts:
+            obj = obj.get(part, {})
+        return obj
+
+    def generate_value_from_schema(prop_schema):
+        """Generate a test value from a schema property"""
+        if "$ref" in prop_schema:
+            resolved = resolve_ref(prop_schema["$ref"])
+            return generate_value_from_schema(resolved)
+        
+        if "enum" in prop_schema:
+            return json.dumps(prop_schema["enum"][0])
+        
+        if "default" in prop_schema:
+            return json.dumps(prop_schema["default"])
+        
+        prop_type = prop_schema.get("type")
+        fmt = prop_schema.get("format")
+        
+        if prop_type == "string":
+            if fmt == "date-time":
+                return json.dumps("2023-01-01T00:00:00Z")
+            elif fmt == "date":
+                return json.dumps("2023-01-01")
+            elif fmt == "email":
+                return json.dumps("test@example.com")
+            elif fmt == "uri" or fmt == "url":
+                return json.dumps("https://example.com")
+            elif "example" in prop_schema:
+                return json.dumps(prop_schema["example"])
+            else:
+                return json.dumps("example")
+        elif prop_type == "integer":
+            return prop_schema.get("example", prop_schema.get("minimum", 1))
+        elif prop_type == "number":
+            return prop_schema.get("example", prop_schema.get("minimum", 1.0))
+        elif prop_type == "boolean":
+            return True
+        elif prop_type == "array":
+            items_schema = prop_schema.get("items", {})
+            item_value = generate_value_from_schema(items_schema)
+            return f"[{item_value}]"
+        elif prop_type == "object":
+            return generate_payload_from_schema(prop_schema)
+        
+        return json.dumps(None)
+
+    def generate_payload_from_schema(schema):
+        """Generate a complete payload object from a schema"""
+        if "$ref" in schema:
+            schema = resolve_ref(schema["$ref"])
+        
+        if "allOf" in schema:
+            merged = {}
+            for sub_schema in schema["allOf"]:
+                merged.update(generate_payload_from_schema(sub_schema))
+            return merged
+        
+        props = schema.get("properties", {})
+        required = schema.get("required", [])
+        
+        fields_to_include = set(required)
+        optional_fields = [k for k in props.keys() if k not in required]
+        fields_to_include.update(optional_fields[:3])
+        
+        out = {}
+        for field_name in fields_to_include:
+            if field_name in props:
+                prop_schema = props[field_name]
+                field_value = generate_value_from_schema(prop_schema)
+                out[field_name] = field_value
+        
+        return out
+    
+    # Extract schema from body parameter (Swagger 2.0) or requestBody (OpenAPI 3.0)
+    if method in ["POST", "PUT", "PATCH"]:
+        schema = None
+        
+        if body_params:
+            schema = body_params[0].get("schema", {})
+        
+        request_body = ep.get("requestBody", {})
+        if request_body and not schema:
+            content = request_body.get("content", {})
+            json_content = content.get("application/json", {})
+            if json_content:
+                schema = json_content.get("schema", {})
+        
+        if schema:
+            payload_obj = generate_payload_from_schema(schema)
+            if payload_obj and len(payload_obj) > 0:
+                payload_parts = []
+                for k, v in payload_obj.items():
+                    if isinstance(v, str) and (v.startswith("{") or v.startswith("[")):
+                        payload_parts.append(f"{k}: {v}")
+                    else:
+                        payload_parts.append(f"{k}: {json.dumps(v)}")
+                payload = "{ " + ", ".join(payload_parts) + " }"
+    
+    # If no payload generated but it's a POST/PUT/PATCH, create fallback
+    if method in ["POST", "PUT", "PATCH"] and not payload:
+        if resource_name:
+            payload = f"{{ id: 1 }}"
+        else:
+            payload = "{}"
+    
     test_code = f"""
   test('{test_name}', async ({{ request }}) => {{"""
     
     if use_stored_id and resource_name:
         # Replace path parameters with stored IDs (with fallback)
         dynamic_path = path
-        # Handle common path parameters
         dynamic_path = dynamic_path.replace('{petId}', '${resourceIds[\'pet\'] || 1}')
         dynamic_path = dynamic_path.replace('{orderId}', '${resourceIds[\'order\'] || 1}')
         dynamic_path = dynamic_path.replace('{username}', '${resourceIds[\'user\'] || 1}')
@@ -547,7 +663,12 @@ def generate_basic_test(ep, use_stored_id=False):
         test_code += """
       headers: {
         'Content-Type': 'application/json',
-      },
+      },"""
+        if payload:
+            test_code += f"""
+      data: {payload},"""
+        else:
+            test_code += """
       data: { id: 1 },"""
     
     test_code += f"""

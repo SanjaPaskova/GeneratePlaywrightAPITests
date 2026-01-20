@@ -1,5 +1,5 @@
 {
-    "swagger_url": "https://petstore.swagger.io/v2/swagger.json",
+    "swagger_url": "https://fakerestapi.azurewebsites.net/swagger/v1/swagger.json",
     "llm_provider": "none",
     "openai_api_key": "",
     "anthropic_api_key": "",

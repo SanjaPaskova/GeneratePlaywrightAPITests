@@ -33,7 +33,8 @@ def get_endpoints(spec):
                 "summary": details.get("summary", ""),
                 "parameters": details.get("parameters", []),
                 "responses": details.get("responses", {}),
-                "consumes": details.get("consumes", [])
+                "consumes": details.get("consumes", []),
+                "requestBody": details.get("requestBody", {})  # OpenAPI 3.0
             })
     return endpoints
 
@@ -92,8 +93,7 @@ def generate_playwright_tests(spec, endpoints):
             full_base_url = f"{scheme}://{host}{base_path}".rstrip("/")
         else:
             # Fallback: extract from config
-            from scripts.config_loader import get_swagger_url
-            swagger_url = get_swagger_url()
+            swagger_url = SWAGGER_URL
             parsed = urlparse(swagger_url)
             full_base_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
     
@@ -146,15 +146,13 @@ test.describe.serial('{api_title} - API Tests', () => {{
     # Generate tests in correct order:
     # 1. POST tests first (to create resources)
     for ep in post_tests:
-        test_code += generate_test_code(ep, use_stored_id=False)
-    
+        test_code += generate_test_code(ep, spec, use_stored_id=False)
     # 2. GET list tests (don't need IDs, but run after POST)
     for ep in get_list_tests:
-        test_code += generate_test_code(ep, use_stored_id=False)
-    
+        test_code += generate_test_code(ep, spec, use_stored_id=False)
     # 3. Dependent tests (use stored IDs from POST)
     for ep in dependent_tests:
-        test_code += generate_test_code(ep, use_stored_id=True)
+        test_code += generate_test_code(ep, spec, use_stored_id=True)
     
     test_code += """});
 """
@@ -162,7 +160,7 @@ test.describe.serial('{api_title} - API Tests', () => {{
     return test_code
 
 
-def generate_test_code(ep, use_stored_id=False):
+def generate_test_code(ep, spec, use_stored_id=False):
     path = ep['path']
     method = ep['method']
     summary = ep['summary']
@@ -175,16 +173,174 @@ def generate_test_code(ep, use_stored_id=False):
         if p.get("name") == "api_key":
             headers["api_key"] = "API_KEY"
     
-    # Determine payload
+    # Extract resource name from path (needed for fallback payload)
+    path_parts = path.split('/')
+    resource_name = None
+    for i, part in enumerate(path_parts):
+        if '{' in part and i > 0:
+            resource_name = path_parts[i-1]
+            break
+    
+    if not resource_name and method == "POST":
+        resource_name = path_parts[-1] if path_parts else None
+    
+    # Determine payload from schema
     payload = None
     body_params = [p for p in parameters if p.get("in") == "body"]
-    if body_params and method in ["POST", "PUT", "PATCH"]:
-        schema = body_params[0].get("schema", {})
-        # Generate payload based on endpoint
-        if "permission" in path.lower():
-            payload = "{ id: 1, name: 'TestResource' }"
-        else:
+    
+    def resolve_ref(ref):
+        """Resolve $ref references in schema"""
+        if not ref or not ref.startswith("#/"):
+            return {}
+        parts = ref.lstrip("#/").split("/")
+        obj = spec
+        for part in parts:
+            obj = obj.get(part, {})
+        return obj
+
+    def generate_value_from_schema(prop_schema, spec_ref=None):
+        """Generate a test value from a schema property"""
+        # Handle $ref
+        if "$ref" in prop_schema:
+            resolved = resolve_ref(prop_schema["$ref"])
+            return generate_value_from_schema(resolved, spec_ref or spec)
+        
+        # Handle enum
+        if "enum" in prop_schema:
+            return json.dumps(prop_schema["enum"][0])
+        
+        # Handle default value
+        if "default" in prop_schema:
+            return json.dumps(prop_schema["default"])
+        
+        prop_type = prop_schema.get("type")
+        fmt = prop_schema.get("format")
+        
+        # Handle string types
+        if prop_type == "string":
+            if fmt == "date-time":
+                return json.dumps("2023-01-01T00:00:00Z")
+            elif fmt == "date":
+                return json.dumps("2023-01-01")
+            elif fmt == "email":
+                return json.dumps("test@example.com")
+            elif fmt == "uri" or fmt == "url":
+                return json.dumps("https://example.com")
+            elif "example" in prop_schema:
+                return json.dumps(prop_schema["example"])
+            else:
+                # Generate example based on property name
+                prop_name = prop_schema.get("name", "")
+                if "name" in prop_name.lower():
+                    return json.dumps("Test Name")
+                elif "email" in prop_name.lower():
+                    return json.dumps("test@example.com")
+                elif "url" in prop_name.lower() or "uri" in prop_name.lower():
+                    return json.dumps("https://example.com")
+                else:
+                    return json.dumps("example")
+        
+        # Handle integer types
+        elif prop_type == "integer":
+            if "example" in prop_schema:
+                return prop_schema["example"]
+            elif "minimum" in prop_schema:
+                return prop_schema["minimum"]
+            else:
+                return 1
+        
+        # Handle number types
+        elif prop_type == "number":
+            if "example" in prop_schema:
+                return prop_schema["example"]
+            elif "minimum" in prop_schema:
+                return prop_schema["minimum"]
+            else:
+                return 1.0
+        
+        # Handle boolean types
+        elif prop_type == "boolean":
+            return True
+        
+        # Handle array types
+        elif prop_type == "array":
+            items_schema = prop_schema.get("items", {})
+            item_value = generate_value_from_schema(items_schema, spec_ref or spec)
+            return f"[{item_value}]"
+        
+        # Handle object types
+        elif prop_type == "object":
+            return generate_payload_from_schema(prop_schema, spec_ref or spec)
+        
+        # Default fallback
+        return json.dumps(None)
+
+    def generate_payload_from_schema(schema, spec_ref=None):
+        """Generate a complete payload object from a schema"""
+        # Resolve $ref
+        if "$ref" in schema:
+            schema = resolve_ref(schema["$ref"])
+        
+        # Handle allOf, anyOf, oneOf
+        if "allOf" in schema:
+            # Merge all schemas in allOf
+            merged = {}
+            for sub_schema in schema["allOf"]:
+                merged.update(generate_payload_from_schema(sub_schema, spec_ref or spec))
+            return merged
+        
+        props = schema.get("properties", {})
+        required = schema.get("required", [])
+        
+        # Include required fields and some optional fields for better coverage
+        fields_to_include = set(required)
+        # Add a few optional fields if available (up to 3)
+        optional_fields = [k for k in props.keys() if k not in required]
+        fields_to_include.update(optional_fields[:3])
+        
+        out = {}
+        for field_name in fields_to_include:
+            if field_name in props:
+                prop_schema = props[field_name]
+                field_value = generate_value_from_schema(prop_schema, spec_ref or spec)
+                out[field_name] = field_value
+        
+        return out
+    
+    # Extract schema from body parameter (Swagger 2.0) or requestBody (OpenAPI 3.0)
+    if method in ["POST", "PUT", "PATCH"]:
+        schema = None
+        
+        # Swagger 2.0: body parameter
+        if body_params:
+            schema = body_params[0].get("schema", {})
+        
+        # OpenAPI 3.0: requestBody
+        request_body = ep.get("requestBody", {})
+        if request_body:
+            content = request_body.get("content", {})
+            json_content = content.get("application/json", {})
+            if json_content:
+                schema = json_content.get("schema", {})
+        
+        if schema:
+            payload_obj = generate_payload_from_schema(schema, spec)
+            if payload_obj and len(payload_obj) > 0:
+                # Convert to JavaScript object string
+                payload_parts = []
+                for k, v in payload_obj.items():
+                    if isinstance(v, str) and (v.startswith("{") or v.startswith("[")):
+                        payload_parts.append(f"{k}: {v}")
+                    else:
+                        payload_parts.append(f"{k}: {json.dumps(v)}")
+                payload = "{ " + ", ".join(payload_parts) + " }"
+    
+    # If no payload generated but it's a POST/PUT/PATCH, create fallback
+    if method in ["POST", "PUT", "PATCH"] and not payload:
+        if resource_name:
             payload = "{ id: 1 }"
+        else:
+            payload = "{}"
     
     # Determine expected status
     expected_status = 200
@@ -210,17 +366,6 @@ def generate_test_code(ep, use_stored_id=False):
     test_name = f"{method} {path}"
     if summary:
         test_name = f"{method} {path} - {summary}"
-    
-    # Extract resource name from path
-    path_parts = path.split('/')
-    resource_name = None
-    for i, part in enumerate(path_parts):
-        if '{' in part and i > 0:
-            resource_name = path_parts[i-1]
-            break
-    
-    if not resource_name and method == "POST":
-        resource_name = path_parts[-1]
     
     # Build test code
     test_code = f"""
@@ -267,25 +412,34 @@ def generate_test_code(ep, use_stored_id=False):
     const response = await request.{method.lower()}(`${{BASE_URL}}{path}`, {{"""
     
     # Determine if we need Content-Type header (POST/PUT/PATCH with body)
-    needs_content_type = body_params and method in ["POST", "PUT", "PATCH"]
+    # Always add headers/data for POST/PUT/PATCH, even if schema extraction failed
+    needs_content_type = method in ["POST", "PUT", "PATCH"]
     
     # Build request object
     if needs_content_type or headers or payload:
-        test_code += f"""
+        if needs_content_type or headers:
+            test_code += f"""
       headers: {{
         'Content-Type': 'application/json',"""
-        if headers:
-            test_code += f"""
+            if headers:
+                test_code += f"""
         'api_key': API_KEY,"""
-        test_code += f"""
+            test_code += f"""
       }},"""
         
         if payload:
             test_code += f"""
       data: {payload},"""
         elif needs_content_type:
-            # Add empty data object for POST/PUT/PATCH even if no payload generated
-            test_code += f"""
+            # Add fallback data for POST/PUT/PATCH if no payload generated
+            # Try to generate minimal payload based on resource name
+            if resource_name:
+                # Generate a basic payload with id field
+                test_code += f"""
+      data: {{ id: 1 }},"""
+            else:
+                # Empty object as last resort
+                test_code += f"""
       data: {{}},"""
     
     test_code += f"""
